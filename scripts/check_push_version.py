@@ -24,17 +24,12 @@ def parse(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in re.findall(r"\d+", text)[:3])
 
 
-def fetch_raw() -> str | None:
-    try:
-        with urllib.request.urlopen(RAW_URL, timeout=3) as response:
-            return response.read().decode("utf-8").strip()
-    except urllib.error.HTTPError as error:
-        if error.code == 404:
-            return None
-        raise
+def fetch_raw() -> str:
+    with urllib.request.urlopen(RAW_URL, timeout=3) as response:
+        return response.read().decode("utf-8").strip()
 
 
-def fetch_gh() -> str | None:
+def fetch_gh() -> str:
     result = subprocess.run(
         ["gh", "api", f"repos/{REPO}/contents/VERSION", "--jq", ".content"],
         capture_output=True,
@@ -43,7 +38,7 @@ def fetch_gh() -> str | None:
     )
     if result.returncode != 0:
         if "404" in result.stderr:
-            return None
+            raise FileNotFoundError("remote VERSION missing")
         raise RuntimeError(result.stderr.strip() or "gh api failed")
     return base64.b64decode(result.stdout.strip()).decode("utf-8").strip()
 
@@ -54,21 +49,25 @@ def main() -> int:
     except OSError:
         print("COULD_NOT_VERIFY missing-local-version")
         return 2
-    unreachable = object()
-    remote: str | None | object = unreachable
+    remote = ""
+    missing = 0
     for fetch in (fetch_raw, fetch_gh):
         try:
             remote = fetch()
             break
+        except FileNotFoundError:
+            missing += 1
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                missing += 1
         except Exception:
-            continue
-    if remote is unreachable:
+            pass
+    if not remote:
+        if missing == 2:
+            print(f"VERSION_OK local={local} remote=none-first-release")
+            return 0
         print("COULD_NOT_VERIFY network-unavailable")
         return 2
-    if remote is None:
-        print(f"VERSION_OK local={local} remote=none-first-release")
-        return 0
-    assert isinstance(remote, str)
     if parse(local) > parse(remote):
         print(f"VERSION_OK local={local} remote={remote}")
         return 0
